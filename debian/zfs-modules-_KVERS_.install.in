@@ -1,0 +1,3 @@
+debian/tree/zfs-modules/etc/depmod.d/zfs-modules-_KVERS_.conf	etc/depmod.d/
+module/zfs.ko		lib/modules/_KVERS_/extra/
+module/spl.ko		lib/modules/_KVERS_/extra/
