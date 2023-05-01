@@ -1,0 +1,3 @@
+# Add file system properties for zettacache devices
+#
+SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", PROGRAM="/usr/sbin/zcache_probe /dev/%k", ENV{ID_FS_LABEL}="zettacache", ENV{ID_FS_LABEL_ENC}="zettacache", ENV{ID_FS_TYPE}="zcache_member", ENV{ID_FS_VERSION}="1.0", ENV{ID_FS_USAGE}="filesystem", ENV{ID_FS_UUID}="$result", ENV{ID_FS_UUID_ENC}="$result"
