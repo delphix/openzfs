@@ -1,0 +1,17 @@
+[Unit]
+Description=Mount ZFS filesystems
+Documentation=man:zfs(8)
+After=systemd-udev-settle.service
+After=zfs-import.target
+After=systemd-remount-fs.service
+ConditionPathIsDirectory=/sys/module/zfs
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-@initconfdir@/zfs
+ExecStart=zfs mount -a
+ExecStop=zfs umount -a
+
+[Install]
+WantedBy=zfs.target
