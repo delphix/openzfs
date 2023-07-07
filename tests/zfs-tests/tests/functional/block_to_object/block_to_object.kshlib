@@ -1,0 +1,71 @@
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# http://www.illumos.org/license/CDDL.
+#
+
+#
+# Copyright (c) 2023 by Delphix. All rights reserved.
+#
+
+. $STF_SUITE/include/libtest.shlib
+. $STF_SUITE/include/object_store.shlib
+. $STF_SUITE/tests/functional/removal/removal.kshlib
+
+DATASET=$TESTPOOL/$TESTFS
+TESTFILE0=/$DATASET/00
+TESTFILE1=/$DATASET/01
+
+DISK="$(echo $DISKS | cut -d' ' -f1)"
+EXTRADISK="$(echo $DISKS | cut -d' ' -f2)"
+
+function setup_testpool
+{
+	log_must zpool create -f $TESTPOOL $DISK
+
+	log_must zfs create -o compression=lz4 -o recordsize=8k $DATASET
+
+	#
+	# First file is created with writes so initial block-based
+	# pool has some data.
+	#
+	log_must mkfile -n 16M $TESTFILE0
+	log_must randwritecomp $TESTFILE0 4096
+
+	#
+	# Second file is created so it can be used for writes specific
+	# to each test.
+	#
+	log_must mkfile -n 16M $TESTFILE1
+}
+
+function cleanup_testpool
+{
+
+	#
+	# Some tests may start randwritecomp workloads
+	# in the background. Make sure you kill those
+	# instances.
+	#
+	pkill randwritecomp
+
+	if poolexists $TESTPOOL; then
+		log_must zpool sync $TESTPOOL
+		log_must zpool destroy $TESTPOOL
+	fi
+
+	#
+	# We always clear the labels of all disks
+	# between tests so imports from zpool or
+	# or zdb do not get confused with leftover
+	# data from old pools.
+	#
+	for disk in $DISKS; do
+		zpool labelclear -f $disk
+	done
+}
