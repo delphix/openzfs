@@ -1,0 +1,188 @@
+#
+# CDDL HEADER START
+#
+# The contents of this file are subject to the terms of the
+# Common Development and Distribution License (the "License").
+# You may not use this file except in compliance with the License.
+#
+# You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
+# or http://www.opensolaris.org/os/licensing.
+# See the License for the specific language governing permissions
+# and limitations under the License.
+#
+# When distributing Covered Code, include this CDDL HEADER in each
+# file and include the License file at usr/src/OPENSOLARIS.LICENSE.
+# If applicable, add the following below this CDDL HEADER, with the
+# fields enclosed by brackets "[]" replaced with your own identifying
+# information: Portions Copyright [yyyy] [name of copyright owner]
+#
+# CDDL HEADER END
+#
+
+#
+# Copyright (c) 2024 by Delphix. All rights reserved.
+#
+
+zoa_config="/etc/zfs/zoa_config.toml"
+
+typeset available_devices=""
+typeset slog_devices=""
+typeset cache_devices=""
+
+[ -z $DISKS ] \
+    && available_devices="$(get_devices)" \
+    || available_devices="$DISKS"
+
+for device in $available_devices; do
+    slog_devices+=" $(get_slog_part $device)"
+    cache_devices+=" $(get_cache_part $device)"
+done
+
+# Export variables to be available and used in tests
+export AVAILABLE_DEVICES="$available_devices"
+export SMALL_PART_DEVICES="$slog_devices"
+export LARGE_PART_DEVICES="$cache_devices"
+
+#
+# Verifies that the zcache devices were added
+# and seen correctly from the agent log
+#
+function verify_zcache_devices_were_added
+{
+    typeset zcache_devices=$@
+
+    for cache_dev in $zcache_devices; do
+        log_must verify_zcache_added_from_logfile $cache_dev
+    done
+    return $?
+}
+
+#
+# After initiating the zcache sync --merge it take some time to
+# complete the merge request. function waits for the 180 seconds
+# and perform 3 times retry
+#
+function wait_for_pending_changes_to_merge
+{
+    max_retries=6
+    # Current retry count
+    retry_count=0
+    while [ $retry_count -lt $max_retries ]; do
+        # Execute the command
+        status_output=$(zcache status)
+        log_note "$status_output"
+        pending_changes=$(echo "$status_output" | sed -n '1p' | grep -oP '([0-9]+) pending changes in memory' | awk '{print $(1)}')
+        status=$(echo "$status_output" | sed -n '3p' | awk '{print $(2)}')
+        if [ $pending_changes -eq 0 ] && [ $status == "completed" ]; then
+            echo "Merge completed"
+            break
+        else
+            echo "Changes are pending. Retrying..."
+            retry_count=$((retry_count + 1))
+            # Sometime pending changes remains hence we trigger sync merge again
+            # after 3 retries.
+            if [ $retry_count -eq 3 ]; then
+                zcache sync --merge
+            fi
+            sleep 60
+        fi
+    done
+    # Check if max retries reached
+    if [ $retry_count -eq $max_retries ]; then
+        exit 1
+    fi
+}
+
+
+#
+# After initiating zcache load, it takes some time to finish
+# We are considering 180seconds time out and performs 3 retries
+#
+
+function wait_for_zcache_load
+{
+    max_retries=3
+    # Current retry count
+    retry_count=0
+    while [ $retry_count -lt $max_retries ]; do
+        # Execute the command
+        status_output=$(zcache status)
+        log_note "$status_output"
+        loading_status=$(echo "$status_output" | awk '/loading:/ {last=$0} END {print last}' | awk '{print $(2)}')
+        log_note $loading_status
+        if [ "$loading_status" == "completed" ]; then
+            echo "zcache load completed"
+            break
+        else
+            echo "zcache load pending. Retrying..."
+            retry_count=$((retry_count + 1))
+            sleep 60
+        fi
+    done
+    # Check if max retries reached
+    if [ $retry_count -eq $max_retries ]; then
+      exit 1
+    fi
+}
+
+#
+# Modify the cache_dump_interval to given time
+# e.g: "30 seconds", "30 minutes"
+#
+function set_cache_dump_interval
+{
+    typeset interval="$1"
+    echo "cache_dump_interval = \"$interval\"" | tee -a "$zoa_config" > /dev/null
+    systemctl restart zfs-object-agent
+}
+
+
+#
+# remove cache dump interval if set
+#
+function remove_cache_dump_interval
+{
+    if grep -q "cache_dump_interval" "$zoa_config"; then
+        sed -i "/cache_dump_interval/d" "$zoa_config"
+        systemctl restart zfs-object-agent
+    fi
+}
+
+#
+# verify list-dumps
+#
+function verify_list_dumps
+{
+    typeset pool=$1
+    typeset num_of_dumps=$2
+    dumps=$(zcache list-dumps $pool | wc -l)
+    if [ "$num_of_dumps" -eq "$dumps" ]; then
+        return 0
+    fi
+    log_note "Number of dumps Expected: [$num_of_dumps], Got: [$dumps]"
+    return 1
+}
+
+#
+# Get available data size in zcache
+#
+function validate_cache_data_with_dump_data_size
+{
+    local pool=$1
+    local cache_size=""
+    local dump_size=""
+    status_output=$(zcache status)
+    cached_data=$(echo "$status_output" | sed -n '2p' | grep -oP '\d+[KMG]B present' | awk '{print $(1)}')
+
+    # get the data available in dump (local)
+    while IFS= read -r line; do
+        if echo "$line" | grep -q '(local)'; then
+            dump_size=$(echo "$line" | grep -oP 'size: \d+[KMG]B \(local\)' | awk '{print ($2)}')
+        fi
+    done < <(zcache list-dumps "$pool")
+    if [ "$dump_size" != "$cached_data" ]; then
+       log_fail "Size mismatch available dump- [$dump_size], cached data size- [$cached_data]"
+    fi
+    log_note "Size matched dump- [$dump_size], cached data size- [$cached_data]"
+    return 0
+}
